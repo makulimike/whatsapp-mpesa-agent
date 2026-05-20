@@ -649,9 +649,9 @@ class WhatsAppHandler:
         session['state'] = 'in_cart'
         
         total_items = sum(item['quantity'] for item in session['cart'])
-        grand = session['total'] + 100
+        grand = session['total']  # No delivery fee
         
-        return f"✅ *Added {quantity}x {product['name']} to your cart!*\n\n🛒 Cart: {total_items} item(s)\n💰 Subtotal: KES {session['total']}\n🚚 Delivery: KES 100\n💵 Total: KES {grand}\n\nSend *CHECKOUT* to pay, *MENU* for more, or *CLEAR* to clear cart"
+        return f"✅ *Added {quantity}x {product['name']} to your cart!*\n\n🛒 Cart: {total_items} item(s)\n💰 Total: KES {grand}\n\nSend *CHECKOUT* to pay, *MENU* for more, or *CLEAR* to clear cart"
     
     def show_cart(self, phone):
         session = self.sessions[phone]
@@ -664,8 +664,8 @@ class WhatsAppHandler:
         for i, item in enumerate(session['cart'], 1):
             cart += f"{i}. {item['product_name']}: {item['quantity']} x KES {item['price']} = KES {item['subtotal']}\n"
         
-        grand = session['total'] + 100
-        cart += f"\n💰 Subtotal: KES {session['total']}\n🚚 Delivery: KES 100\n💵 Total: KES {grand}\n\nSend *CHECKOUT* to complete order\nSend *CLEAR* to empty cart\nSend *MENU* to add more items"
+        grand = session['total']
+        cart += f"\n💰 Total: KES {grand}\n\nSend *CHECKOUT* to complete order\nSend *CLEAR* to empty cart\nSend *MENU* to add more items"
         
         return cart
     
@@ -677,13 +677,13 @@ class WhatsAppHandler:
             return "🛒 Your cart is empty. Send *MENU* to add items."
         
         session['state'] = 'awaiting_address'
-        grand_total = session['total'] + 0
+        grand_total = session['total']
         
         return f"📍 *Delivery Information*\n\nTotal: KES {grand_total}\n\n*How would you like to provide your address?*\n\n1️⃣ *Share Location* - Tap the attachment icon 📎 and select 'Location' to share your current location\n\n2️⃣ *Type Manually* - Send your full address\n\nExample: Westlands, Mpaka Road, Nairobi\n\nSend *CLEAR* to clear cart\nSend *CANCEL* to cancel"
     
     def save_address_and_payment(self, phone, address):
         session = self.sessions[phone]
-        grand_total = session['total'] + 100
+        grand_total = session['total']
         
         order_id = str(uuid.uuid4())[:8].upper()
         session['order_id'] = order_id
@@ -702,7 +702,7 @@ class WhatsAppHandler:
         if not session or not session.get('order_id'):
             return "❌ No order found. Send *MENU* to start over."
         
-        grand_total = session['total'] + 100
+        grand_total = session['total']
         
         if not self.paystack_secret_key:
             result = self.simulate_payment(phone)
@@ -761,7 +761,7 @@ class WhatsAppHandler:
         if not session or not session.get('order_id'):
             return "❌ No order found."
         
-        grand_total = session['total'] + 100
+        grand_total = session['total']
         
         # Update stock using Supabase
         for item in session['cart']:
