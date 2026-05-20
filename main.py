@@ -22,7 +22,7 @@ def root():
     return {
         "status": "WhatsApp Shop Agent Running",
         "version": "4.0",
-        "database": "SQLite",
+        "database": "Supabase",
         "payment": "Paystack",
         "whatsapp_provider": "Flaresend"
     }
