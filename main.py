@@ -91,7 +91,9 @@ async def admin_products():
     return {"total_products": len(products), "products": products}
 
 @app.get("/health")
+@app.head("/health")
 async def health_check():
+    """Health check endpoint - supports both GET and HEAD requests for uptime monitoring"""
     return {"status": "healthy", "sessions": len(handler.sessions)}
 
 if __name__ == "__main__":
@@ -101,6 +103,7 @@ if __name__ == "__main__":
     print("="*60)
     print(f"\n✅ Port: {port}")
     print("✅ Webhook ready")
+    print("✅ Health check supports GET and HEAD")
     print("\n📝 Send MENU to start")
     print("="*60 + "\n")
     
