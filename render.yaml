@@ -1,0 +1,19 @@
+services:
+  - type: web
+    name: whatsapp-shop-agent
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: FLARESEND_API_KEY
+        sync: false
+      - key: FLARESEND_WHATSAPP_NUMBER
+        sync: false
+      - key: PAYSTACK_SECRET_KEY
+        sync: false
+      - key: PAYSTACK_PUBLIC_KEY
+        sync: false
+      - key: PAYSTACK_CALLBACK_URL
+        sync: false
+    healthCheckPath: /health
+    autoDeploy: true
