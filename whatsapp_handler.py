@@ -646,7 +646,7 @@ class WhatsAppHandler:
             return self.simulate_payment(phone)
         
         try:
-            self.send_whatsapp_message(phone, "⏳ Processing payment...")
+            self.send_whatsapp_message(phone, "⏳ Processing your payment... Please wait.")
             
             reference = f"ORDER_{session['order_id']}_{int(datetime.now().timestamp())}"
             amount_in_cents = int(grand_total * 100)
@@ -660,7 +660,7 @@ class WhatsAppHandler:
                     "amount": amount_in_cents,
                     "currency": "KES",
                     "reference": reference,
-                    "channels": ["mobile_money", "card"]
+                    "channels": ["mobile_money", "card", "bank_transfer"]
                 },
                 headers={
                     "Authorization": f"Bearer {self.paystack_secret_key}",
@@ -684,9 +684,9 @@ class WhatsAppHandler:
                     session['state'] = 'order_confirmed'
                     payment_link = data['data']['authorization_url']
                     
-                    return f"💰 *PAYMENT READY*\n\nOrder: {session['order_id']}\nAmount: KES {grand_total}\n\n📱 M-PESA: STK push sent\n💳 Card: {payment_link}\n\n✅ Complete payment to confirm your order"
+                    return f"💰 *PAYMENT READY*\n\n📦 *Order:* {session['order_id']}\n💵 *Amount:* KES {grand_total}\n\n🔗 *Click the link below to complete payment:*\n{payment_link}\n\n📱 *On the Paystack page you can pay with:*\n• M-PESA (STK push to your phone)\n• Credit/Debit Card\n• Bank Transfer\n\n✅ Payment is automatic - your order will be confirmed instantly.\n\nSend *STATUS* to check order status."
                 else:
-                    return f"❌ Payment error: {data.get('message')}"
+                    return f"❌ Payment error: {data.get('message')}\n\nPlease try again or contact support."
             else:
                 return "❌ Payment service error. Please try again."
         except Exception as e:
@@ -712,7 +712,7 @@ class WhatsAppHandler:
         self.db.update_order_status(session['order_id'], 'paid')
         session['state'] = 'order_confirmed'
         
-        return f"💰 *PAYMENT CONFIRMED!*\n\nOrder: {session['order_id']}\nAmount: KES {grand_total}\n📍 {session.get('address', 'N/A')}\n\n✅ Order confirmed!\n🚚 Delivery within 2 hours\n\nSend *MENU* to continue shopping"
+        return f"💰 *PAYMENT CONFIRMED! (Demo Mode)*\n\n📦 *Order:* {session['order_id']}\n💵 *Amount:* KES {grand_total}\n📍 *Delivery:* {session.get('address', 'N/A')}\n\n✅ *Order confirmed!*\n🚚 We'll deliver within 2 hours.\n\nSend *MENU* to continue shopping or *STATUS* to track order."
     
     def show_status(self, phone):
         orders = self.db.get_customer_orders(phone)
