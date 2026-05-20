@@ -31,9 +31,15 @@ def root():
 async def whatsapp_webhook(request: Request):
     """Handle incoming WhatsApp messages"""
     try:
+        # Log the raw request body
+        body = await request.body()
+        print(f"\n📥 RAW WEBHOOK BODY: {body}")
+        
         payload = await request.json()
+        print(f"📥 PARSED PAYLOAD: {payload}")
         
         if payload.get('event') != 'message_received':
+            print(f"⏭️ Ignoring event: {payload.get('event')}")
             return JSONResponse({"status": "ignored"})
         
         data = payload.get('data', {})
@@ -41,22 +47,27 @@ async def whatsapp_webhook(request: Request):
         message_data = data.get('message', {})
         message_body = message_data.get('conversation', '')
         
+        print(f"📱 FROM: {from_raw}, MSG: {message_body}")
+        
         if from_raw and message_body:
             from_number = from_raw.replace('@s.whatsapp.net', '')
             from_number = ''.join(filter(str.isdigit, from_number))
             
-            print(f"\n📱 {from_number}: {message_body}")
+            print(f"\n📱 Processing message from {from_number}: {message_body}")
             
             # Process message
             handler.process_message(from_number, message_body)
             
             return JSONResponse({"status": "success"})
         
+        print(f"⚠️ Could not extract message")
         return JSONResponse({"status": "ignored"})
     
     except Exception as e:
-        print(f"Error: {e}")
-        return JSONResponse({"status": "error"})
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        return JSONResponse({"status": "error", "message": str(e)})
 
 @app.post("/paystack-webhook")
 async def paystack_webhook(request: Request):
@@ -64,6 +75,8 @@ async def paystack_webhook(request: Request):
         payload = await request.json()
         event = payload.get('event')
         data = payload.get('data')
+        
+        print(f"💰 Paystack webhook: {event}")
         
         if event == 'charge.success':
             reference = data.get('reference')
@@ -78,6 +91,7 @@ async def paystack_webhook(request: Request):
         
         return JSONResponse({"status": "success"})
     except Exception as e:
+        print(f"💰 Error: {e}")
         return JSONResponse({"status": "error"})
 
 @app.get("/admin/orders")
@@ -93,7 +107,6 @@ async def admin_products():
 @app.get("/health")
 @app.head("/health")
 async def health_check():
-    """Health check endpoint - supports both GET and HEAD requests for uptime monitoring"""
     return {"status": "healthy", "sessions": len(handler.sessions)}
 
 if __name__ == "__main__":
