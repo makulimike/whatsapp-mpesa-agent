@@ -33,12 +33,10 @@ class WhatsAppHandler:
             if row:
                 return {'name': row['value']}
             else:
-                # Create default settings
                 conn.execute("INSERT INTO settings (key, value) VALUES ('shop_name', 'Our Shop')")
                 conn.commit()
                 return {'name': 'Our Shop'}
         except:
-            # Settings table might not exist yet
             conn = self.db.get_connection()
             conn.execute('''
                 CREATE TABLE IF NOT EXISTS settings (
@@ -110,53 +108,10 @@ class WhatsAppHandler:
         """Handle admin commands when logged in"""
         message_lower = message.lower().strip()
         
-        # ADD PRODUCT
-        if message_lower == 'add' or message_lower == '1':
-            self.sessions[phone] = self.sessions.get(phone, {})
-            self.sessions[phone]['admin_state'] = 'awaiting_product_details'
-            self.send_whatsapp_message(phone, "📦 *ADD PRODUCT*\n\nSend product details in format:\n`Name, Price, Stock`\n\nExample: `Wheat Flour, 250, 50`\n\nSend *CANCEL* to cancel")
-            return True
-        
-        # LIST PRODUCTS
-        if message_lower == 'list' or message_lower == '2':
-            products = self.db.get_products()
-            if not products:
-                self.send_whatsapp_message(phone, "📋 No products found. Use ADD to add products.")
-            else:
-                response = "📋 *YOUR PRODUCTS*\n\n"
-                for p in products:
-                    response += f"🔖 *{p['name']}*\n"
-                    response += f"   Code: {p['code']}\n"
-                    response += f"   Price: KES {p['price']}\n"
-                    response += f"   Stock: {p['stock']}\n\n"
-                self.send_whatsapp_message(phone, response)
-            return True
-        
-        # CHANGE SHOP NAME
-        if message_lower.startswith('shop name'):
-            parts = message.split(' ', 2)
-            if len(parts) >= 3:
-                new_name = parts[2].strip()
-                old_name = self.get_shop_name()
-                self.set_shop_name(new_name)
-                self.send_whatsapp_message(phone, f"✅ *Shop Name Changed!*\n\nOld name: {old_name}\nNew name: {new_name}")
-            else:
-                current_name = self.get_shop_name()
-                self.sessions[phone] = self.sessions.get(phone, {})
-                self.sessions[phone]['admin_state'] = 'awaiting_shop_name'
-                self.send_whatsapp_message(phone, f"🏪 *CHANGE SHOP NAME*\n\nCurrent shop name: {current_name}\n\nSend the new shop name:\nExample: `Mike's Groceries`\n\nSend *CANCEL* to cancel")
-            return True
-        
-        # LOGOUT
-        if message_lower == 'logout' or message_lower == '7':
-            if phone in self.admin_sessions:
-                del self.admin_sessions[phone]
-            self.send_whatsapp_message(phone, "🔐 *Logged out!* Your admin session has ended.\n\nSend *MENU* to continue shopping.")
-            return True
-        
-        # Check for awaiting product details
+        # Check for awaiting states first
         admin_state = self.sessions.get(phone, {}).get('admin_state', '')
         
+        # ============ AWAITING PRODUCT DETAILS (ADD) ============
         if admin_state == 'awaiting_product_details':
             if message_lower == 'cancel':
                 self.sessions[phone]['admin_state'] = ''
@@ -188,6 +143,181 @@ class WhatsAppHandler:
                 self.send_whatsapp_message(phone, f"❌ Error: {e}\nPlease use format: Name, Price, Stock")
             return True
         
+        # ============ AWAITING EDIT SELECTION ============
+        if admin_state == 'awaiting_edit_selection':
+            products = self.db.get_products()
+            selected = None
+            
+            if message.isdigit():
+                idx = int(message) - 1
+                if 0 <= idx < len(products):
+                    selected = products[idx]
+            else:
+                for p in products:
+                    if p['code'].lower() == message_lower:
+                        selected = p
+                        break
+            
+            if selected:
+                self.sessions[phone]['admin_edit_product'] = selected
+                self.sessions[phone]['admin_state'] = 'awaiting_edit_details'
+                response = f"✏️ *Editing: {selected['name']}*\n\n"
+                response += f"Current Price: KES {selected['price']}\n"
+                response += f"Current Stock: {selected['stock']}\n\n"
+                response += "Send new details in format:\n"
+                response += "`new_price, new_stock`\n\n"
+                response += "Example: `300, 75`\n\n"
+                response += "Send *CANCEL* to cancel"
+            else:
+                response = "❌ Product not found. Send the product NUMBER or CODE.\n\nSend *CANCEL* to cancel"
+            
+            self.send_whatsapp_message(phone, response)
+            return True
+        
+        # ============ AWAITING EDIT DETAILS ============
+        if admin_state == 'awaiting_edit_details':
+            if message_lower == 'cancel':
+                self.sessions[phone]['admin_state'] = ''
+                self.show_admin_menu(phone)
+                return True
+            
+            try:
+                parts = [p.strip() for p in message.split(',')]
+                if len(parts) >= 2:
+                    new_price = int(parts[0])
+                    new_stock = int(parts[1])
+                    product = self.sessions[phone].get('admin_edit_product')
+                    
+                    if product:
+                        conn = self.db.get_connection()
+                        conn.execute(
+                            'UPDATE products SET price = ?, stock = ? WHERE id = ?',
+                            (new_price, new_stock, product['id'])
+                        )
+                        conn.commit()
+                        
+                        response = f"✅ *Product Updated!*\n\n📦 {product['name']}\n💰 New Price: KES {new_price}\n📊 New Stock: {new_stock}\n\nSend *ADMIN* for menu"
+                        self.sessions[phone]['admin_state'] = ''
+                        self.sessions[phone].pop('admin_edit_product', None)
+                    else:
+                        response = "❌ Error: Product not found"
+                else:
+                    response = "❌ Please use format: `new_price, new_stock`\nExample: `300, 75`"
+            except Exception as e:
+                response = f"❌ Error: {e}"
+            
+            self.send_whatsapp_message(phone, response)
+            return True
+        
+        # ============ AWAITING STOCK SELECTION ============
+        if admin_state == 'awaiting_stock_selection':
+            products = self.db.get_products()
+            selected = None
+            
+            if message.isdigit():
+                idx = int(message) - 1
+                if 0 <= idx < len(products):
+                    selected = products[idx]
+            else:
+                for p in products:
+                    if p['code'].lower() == message_lower:
+                        selected = p
+                        break
+            
+            if selected:
+                self.sessions[phone]['admin_stock_product'] = selected
+                self.sessions[phone]['admin_state'] = 'awaiting_stock_quantity'
+                response = f"📊 *Updating Stock: {selected['name']}*\n\n"
+                response += f"Current Stock: {selected['stock']}\n\n"
+                response += "Send the *NEW STOCK QUANTITY*\n"
+                response += "Example: `100`\n\n"
+                response += "Send *CANCEL* to cancel"
+            else:
+                response = "❌ Product not found. Send the product NUMBER or CODE.\n\nSend *CANCEL* to cancel"
+            
+            self.send_whatsapp_message(phone, response)
+            return True
+        
+        # ============ AWAITING STOCK QUANTITY ============
+        if admin_state == 'awaiting_stock_quantity':
+            if message_lower == 'cancel':
+                self.sessions[phone]['admin_state'] = ''
+                self.show_admin_menu(phone)
+                return True
+            
+            try:
+                new_stock = int(message)
+                product = self.sessions[phone].get('admin_stock_product')
+                
+                if product:
+                    conn = self.db.get_connection()
+                    conn.execute('UPDATE products SET stock = ? WHERE id = ?', (new_stock, product['id']))
+                    conn.commit()
+                    
+                    response = f"✅ *Stock Updated!*\n\n📦 {product['name']}\n📊 New Stock: {new_stock}\n\nSend *ADMIN* for menu"
+                    self.sessions[phone]['admin_state'] = ''
+                    self.sessions[phone].pop('admin_stock_product', None)
+                else:
+                    response = "❌ Error: Product not found"
+            except Exception as e:
+                response = f"❌ Error: {e}\nPlease send a valid number"
+            
+            self.send_whatsapp_message(phone, response)
+            return True
+        
+        # ============ AWAITING DELETE SELECTION ============
+        if admin_state == 'awaiting_delete_selection':
+            products = self.db.get_products()
+            selected = None
+            
+            if message.isdigit():
+                idx = int(message) - 1
+                if 0 <= idx < len(products):
+                    selected = products[idx]
+            else:
+                for p in products:
+                    if p['code'].lower() == message_lower:
+                        selected = p
+                        break
+            
+            if selected:
+                self.sessions[phone]['admin_delete_product'] = selected
+                self.sessions[phone]['admin_state'] = 'awaiting_delete_confirm'
+                response = f"⚠️ *Confirm Deletion*\n\n"
+                response += f"Are you sure you want to delete:\n"
+                response += f"📦 {selected['name']}\n"
+                response += f"💰 Price: KES {selected['price']}\n"
+                response += f"📊 Stock: {selected['stock']}\n\n"
+                response += "Reply *YES* to delete or *CANCEL*"
+            else:
+                response = "❌ Product not found. Send the product NUMBER or CODE.\n\nSend *CANCEL* to cancel"
+            
+            self.send_whatsapp_message(phone, response)
+            return True
+        
+        # ============ AWAITING DELETE CONFIRM ============
+        if admin_state == 'awaiting_delete_confirm':
+            if message_lower == 'yes':
+                product = self.sessions[phone].get('admin_delete_product')
+                if product:
+                    conn = self.db.get_connection()
+                    conn.execute('DELETE FROM products WHERE id = ?', (product['id'],))
+                    conn.commit()
+                    response = f"✅ *Product Deleted!*\n\n📦 {product['name']} has been removed."
+                    self.sessions[phone]['admin_state'] = ''
+                    self.sessions[phone].pop('admin_delete_product', None)
+                else:
+                    response = "❌ Error: Product not found"
+            elif message_lower == 'cancel':
+                response = "❌ Deletion cancelled."
+                self.sessions[phone]['admin_state'] = ''
+            else:
+                response = "❌ Reply *YES* to delete or *CANCEL*"
+            
+            self.send_whatsapp_message(phone, response)
+            return True
+        
+        # ============ AWAITING SHOP NAME ============
         if admin_state == 'awaiting_shop_name':
             if message_lower == 'cancel':
                 self.sessions[phone]['admin_state'] = ''
@@ -198,7 +328,110 @@ class WhatsAppHandler:
             old_name = self.get_shop_name()
             self.set_shop_name(new_name)
             self.sessions[phone]['admin_state'] = ''
-            self.send_whatsapp_message(phone, f"✅ *Shop Name Changed!*\n\nOld: {old_name}\nNew: {new_name}\n\nSend *ADMIN* for menu")
+            response = f"✅ *Shop Name Changed!*\n\nOld: {old_name}\nNew: {new_name}\n\nSend *ADMIN* for menu"
+            self.send_whatsapp_message(phone, response)
+            return True
+        
+        # ============ REGULAR COMMANDS ============
+        
+        # ADD PRODUCT
+        if message_lower == 'add' or message_lower == '1':
+            self.sessions[phone] = self.sessions.get(phone, {})
+            self.sessions[phone]['admin_state'] = 'awaiting_product_details'
+            self.send_whatsapp_message(phone, "📦 *ADD PRODUCT*\n\nSend product details in format:\n`Name, Price, Stock`\n\nExample: `Wheat Flour, 250, 50`\n\nSend *CANCEL* to cancel")
+            return True
+        
+        # LIST PRODUCTS
+        if message_lower == 'list' or message_lower == '2':
+            products = self.db.get_products()
+            if not products:
+                self.send_whatsapp_message(phone, "📋 No products found. Use ADD to add products.")
+            else:
+                response = "📋 *YOUR PRODUCTS*\n\n"
+                for p in products:
+                    response += f"🔖 *{p['name']}*\n"
+                    response += f"   Code: {p['code']}\n"
+                    response += f"   Price: KES {p['price']}\n"
+                    response += f"   Stock: {p['stock']}\n\n"
+                self.send_whatsapp_message(phone, response)
+            return True
+        
+        # EDIT PRODUCT
+        if message_lower == 'edit' or message_lower == '3':
+            products = self.db.get_products()
+            if not products:
+                self.send_whatsapp_message(phone, "📋 No products to edit. Use ADD to add products first.")
+                return True
+            
+            self.sessions[phone]['admin_state'] = 'awaiting_edit_selection'
+            response = "✏️ *EDIT PRODUCT*\n\n"
+            response += "Select a product to edit:\n\n"
+            for idx, p in enumerate(products, 1):
+                response += f"{idx}. {p['name']} - KES {p['price']} (Stock: {p['stock']})\n"
+            response += "\nSend the product *NUMBER* or *CODE*\n"
+            response += "Example: `1` or `MF001`\n\n"
+            response += "Send *CANCEL* to cancel"
+            self.send_whatsapp_message(phone, response)
+            return True
+        
+        # UPDATE STOCK
+        if message_lower == 'stock' or message_lower == '4':
+            products = self.db.get_products()
+            if not products:
+                self.send_whatsapp_message(phone, "📋 No products. Use ADD to add products first.")
+                return True
+            
+            self.sessions[phone]['admin_state'] = 'awaiting_stock_selection'
+            response = "📊 *UPDATE STOCK*\n\n"
+            response += "Select a product to update stock:\n\n"
+            for idx, p in enumerate(products, 1):
+                response += f"{idx}. {p['name']} - Current stock: {p['stock']}\n"
+            response += "\nSend the product *NUMBER* or *CODE*\n"
+            response += "Example: `1` or `MF001`\n\n"
+            response += "Send *CANCEL* to cancel"
+            self.send_whatsapp_message(phone, response)
+            return True
+        
+        # DELETE PRODUCT
+        if message_lower == 'delete' or message_lower == '5':
+            products = self.db.get_products()
+            if not products:
+                self.send_whatsapp_message(phone, "📋 No products to delete. Use ADD to add products first.")
+                return True
+            
+            self.sessions[phone]['admin_state'] = 'awaiting_delete_selection'
+            response = "🗑️ *DELETE PRODUCT*\n\n"
+            response += "Select a product to delete:\n\n"
+            for idx, p in enumerate(products, 1):
+                response += f"{idx}. {p['name']} - KES {p['price']} (Stock: {p['stock']})\n"
+            response += "\nSend the product *NUMBER* or *CODE*\n"
+            response += "Example: `1` or `MF001`\n\n"
+            response += "Send *CANCEL* to cancel"
+            self.send_whatsapp_message(phone, response)
+            return True
+        
+        # CHANGE SHOP NAME
+        if message_lower.startswith('shop name'):
+            parts = message.split(' ', 2)
+            if len(parts) >= 3:
+                new_name = parts[2].strip()
+                old_name = self.get_shop_name()
+                self.set_shop_name(new_name)
+                self.send_whatsapp_message(phone, f"✅ *Shop Name Changed!*\n\nOld name: {old_name}\nNew name: {new_name}")
+            else:
+                current_name = self.get_shop_name()
+                self.sessions[phone] = self.sessions.get(phone, {})
+                self.sessions[phone]['admin_state'] = 'awaiting_shop_name'
+                self.send_whatsapp_message(phone, f"🏪 *CHANGE SHOP NAME*\n\nCurrent shop name: {current_name}\n\nSend the new shop name:\nExample: `Mike's Groceries`\n\nSend *CANCEL* to cancel")
+            return True
+        
+        # LOGOUT
+        if message_lower == 'logout' or message_lower == '7' or message_lower == '6':
+            if phone in self.admin_sessions:
+                del self.admin_sessions[phone]
+            self.sessions[phone] = self.sessions.get(phone, {})
+            self.sessions[phone]['admin_state'] = ''
+            self.send_whatsapp_message(phone, "🔐 *Logged out!* Your admin session has ended.\n\nSend *MENU* to continue shopping.")
             return True
         
         # If not recognized, show menu
