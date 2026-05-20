@@ -4,7 +4,7 @@ import requests
 import os
 import json
 from datetime import datetime, timedelta
-from database import Database
+from database_supabase import Database
 from flaresend_client import FlaresendClient
 
 class WhatsAppHandler:
