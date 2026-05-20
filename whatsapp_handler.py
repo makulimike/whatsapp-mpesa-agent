@@ -2,7 +2,7 @@ import re
 import uuid
 import requests
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 from database import Database
 from flaresend_client import FlaresendClient
 
@@ -10,20 +10,77 @@ class WhatsAppHandler:
     def __init__(self):
         self.db = Database()
         self.sessions = {}
+        self.admin_sessions = {}  # Track admin logins
+        self.admin_password = os.getenv('ADMIN_PASSWORD', '1039')  # From Render env
         self.paystack_secret_key = os.getenv('PAYSTACK_SECRET_KEY', '')
         self.flaresend = FlaresendClient()
         print(f"✅ WhatsApp Shop Agent Ready")
+        print(f"🔐 Admin password loaded: {'SET' if self.admin_password else 'NOT SET'}")
     
     def send_whatsapp_message(self, to_number: str, message: str):
         """Send message"""
         return self.flaresend.send_message(to_number, message)
     
+    def is_admin(self, phone):
+        """Check if user has an active admin session"""
+        if phone in self.admin_sessions:
+            expiry = self.admin_sessions[phone]
+            if datetime.now() < expiry:
+                return True
+            else:
+                del self.admin_sessions[phone]
+        return False
+    
+    def show_admin_menu(self, phone):
+        """Show admin menu options"""
+        menu = "🔐 *ADMIN PANEL*\n\n"
+        menu += "You are logged in as Admin.\n\n"
+        menu += "*What would you like to do?*\n\n"
+        menu += "📦 *1. ADD PRODUCT*\n"
+        menu += "   Send: ADD\n\n"
+        menu += "📋 *2. LIST PRODUCTS*\n"
+        menu += "   Send: LIST\n\n"
+        menu += "✏️ *3. EDIT PRODUCT*\n"
+        menu += "   Send: EDIT\n\n"
+        menu += "📊 *4. UPDATE STOCK*\n"
+        menu += "   Send: STOCK\n\n"
+        menu += "🗑️ *5. DELETE PRODUCT*\n"
+        menu += "   Send: DELETE\n\n"
+        menu += "🔓 *6. LOGOUT*\n"
+        menu += "   Send: LOGOUT\n\n"
+        menu += "Type the command number or name to continue."
+        
+        self.send_whatsapp_message(phone, menu)
+    
     def process_message(self, phone, message):
-        """Process message - Always friendly"""
+        """Process message - Main entry point"""
         message = message.strip()
         message_lower = message.lower()
         
-        # Initialize session if new
+        # ============ FIRST: Check for admin commands ============
+        # Admin login attempt (starts with 'admin')
+        if message_lower.startswith('admin'):
+            parts = message.split()
+            if len(parts) >= 2:
+                password = parts[1]
+                if password == self.admin_password:
+                    self.admin_sessions[phone] = datetime.now() + timedelta(hours=1)
+                    self.show_admin_menu(phone)
+                    return
+                else:
+                    self.send_whatsapp_message(phone, "❌ *Invalid Password!* Access denied.\n\nSend *ADMIN your_password* to try again.")
+                    return
+            else:
+                self.send_whatsapp_message(phone, "🔐 *Admin Access*\n\nPlease send your password:\n`ADMIN your_password`\n\nExample: `ADMIN 1039`")
+                return
+        
+        # Check if user is logged in as admin
+        if self.is_admin(phone):
+            # Handle admin commands
+            if self.handle_admin_command(phone, message):
+                return
+        
+        # Initialize session for customers
         if phone not in self.sessions:
             self.sessions[phone] = {
                 'cart': [],
@@ -35,37 +92,20 @@ class WhatsAppHandler:
         session = self.sessions[phone]
         state = session['state']
         
-        # ============ GREETINGS & FRIENDLY RESPONSES ============
-        if message_lower in ['hi', 'hello', 'hey', 'hola', 'jambo', 'sasa', 'hi there', 'good morning', 'good afternoon', 'good evening', 'yo', 'hallo']:
+        # ============ GREETINGS ============
+        if message_lower in ['hi', 'hello', 'hey', 'hola', 'jambo', 'sasa']:
             response = f"👋 *Hello!* Welcome to our shop! 😊\n\n{self.show_main_menu(phone)}"
             self.send_whatsapp_message(phone, response)
             return
         
-        if message_lower in ['thank you', 'thanks', 'asante', 'thx', 'thank']:
-            response = "🙏 *You're welcome!* Happy to help. Anything else you'd like? Send *MENU* to see our products."
-            self.send_whatsapp_message(phone, response)
-            return
-        
-        if message_lower in ['bye', 'goodbye', 'kwaheri', 'see you later']:
-            response = "👋 *Goodbye!* Thank you for visiting our shop. Come back anytime! Send *MENU* whenever you're ready to shop."
-            self.send_whatsapp_message(phone, response)
-            return
-        
-        if message_lower in ['help', 'support', '?']:
-            response = "🆘 *Need help?*\n\n"
-            response += "Here's what you can do:\n"
-            response += "• Send *MENU* to see all products\n"
-            response += "• Send *CART* to view your cart\n"
-            response += "• Send *CHECKOUT* to complete order\n"
-            response += "• Send *STATUS* to see your orders\n"
-            response += "• Send *CLEAR* to clear cart\n\n"
-            response += "Just send the number of the product you want to order!"
+        if message_lower in ['thank you', 'thanks', 'asante']:
+            response = "🙏 *You're welcome!* Send *MENU* to see our products."
             self.send_whatsapp_message(phone, response)
             return
         
         # ============ MAIN MENU ============
         if state == 'main_menu':
-            if message_lower in ['menu', 'start', 'shop', 'products', 'catalog']:
+            if message_lower in ['menu', 'start', 'shop', 'products']:
                 response = self.show_main_menu(phone)
                 self.send_whatsapp_message(phone, response)
                 return
@@ -90,13 +130,6 @@ class WhatsAppHandler:
                 self.send_whatsapp_message(phone, response)
                 return
             
-            if message_lower == 'clear':
-                session['cart'] = []
-                session['total'] = 0
-                self.send_whatsapp_message(phone, "🗑️ Your cart has been cleared. Send *MENU* to start shopping.")
-                return
-            
-            # Friendly fallback for unknown messages
             response = f"🤔 I didn't quite understand '*{message}*'.\n\n{self.show_main_menu(phone)}"
             self.send_whatsapp_message(phone, response)
             return
@@ -110,12 +143,12 @@ class WhatsAppHandler:
                     self.send_whatsapp_message(phone, response)
                     return
                 else:
-                    self.send_whatsapp_message(phone, "❌ Please enter a valid quantity (1 or more). Try again.")
+                    self.send_whatsapp_message(phone, "❌ Please enter a valid quantity (1 or more).")
                     return
             elif message_lower == 'cancel':
                 session['state'] = 'main_menu'
                 session['pending_product'] = None
-                self.send_whatsapp_message(phone, "❌ Order cancelled. Send *MENU* to continue shopping.")
+                self.send_whatsapp_message(phone, "❌ Cancelled. Send *MENU* to continue.")
                 return
             else:
                 self.send_whatsapp_message(phone, "❌ Please send a number for quantity (e.g., 2) or send *CANCEL*.")
@@ -139,12 +172,7 @@ class WhatsAppHandler:
                 session['cart'] = []
                 session['total'] = 0
                 session['state'] = 'main_menu'
-                self.send_whatsapp_message(phone, "🗑️ Your cart has been cleared. Send *MENU* to start shopping.")
-                return
-            elif message_lower == 'add':
-                session['state'] = 'main_menu'
-                response = self.show_main_menu(phone)
-                self.send_whatsapp_message(phone, response)
+                self.send_whatsapp_message(phone, "🗑️ Cart cleared. Send *MENU* to shop.")
                 return
             else:
                 response = self.show_cart(phone)
@@ -155,7 +183,7 @@ class WhatsAppHandler:
         elif state == 'awaiting_address':
             if message_lower == 'cancel':
                 session['state'] = 'main_menu'
-                self.send_whatsapp_message(phone, "❌ Checkout cancelled. Send *MENU* to continue shopping.")
+                self.send_whatsapp_message(phone, "❌ Checkout cancelled.")
                 return
             else:
                 response = self.save_address_and_payment(phone, message)
@@ -170,42 +198,89 @@ class WhatsAppHandler:
                 return
             elif message_lower == 'cancel':
                 session['state'] = 'main_menu'
-                self.send_whatsapp_message(phone, "❌ Payment cancelled. Send *MENU* to continue shopping.")
+                self.send_whatsapp_message(phone, "❌ Payment cancelled.")
                 return
             else:
-                self.send_whatsapp_message(phone, "💳 Reply *PAY* to complete your payment or *CANCEL* to cancel.")
+                self.send_whatsapp_message(phone, "💳 Reply *PAY* to complete payment or *CANCEL*.")
                 return
         
-        # ============ ORDER CONFIRMED ============
-        elif state == 'order_confirmed':
-            if message_lower == 'menu':
-                session['state'] = 'main_menu'
-                response = self.show_main_menu(phone)
-                self.send_whatsapp_message(phone, response)
-                return
-            elif message_lower == 'status':
-                response = self.show_status(phone)
-                self.send_whatsapp_message(phone, response)
-                return
-            elif message_lower == 'track':
-                orders = self.db.get_customer_orders(phone)
-                if orders:
-                    latest = orders[0]
-                    response = self.track_order(phone, latest['order_id'])
-                    self.send_whatsapp_message(phone, response)
-                else:
-                    self.send_whatsapp_message(phone, "No orders found. Send *MENU* to shop.")
-                return
-            else:
-                self.send_whatsapp_message(phone, "✅ Your order is confirmed! Send *MENU* to shop more, *STATUS* to check orders.")
-                return
-        
-        # Default fallback
+        # Default
         response = self.show_main_menu(phone)
         self.send_whatsapp_message(phone, response)
     
+    def handle_admin_command(self, phone, message):
+        """Handle admin commands when logged in"""
+        message_lower = message.lower().strip()
+        
+        # ADD PRODUCT
+        if message_lower == 'add' or message_lower == '1':
+            self.sessions[phone]['admin_state'] = 'awaiting_product_details'
+            self.send_whatsapp_message(phone, "📦 *ADD PRODUCT*\n\nSend product details in format:\n`Name, Price, Stock`\n\nExample: `Wheat Flour, 250, 50`\n\nSend *CANCEL* to cancel")
+            return True
+        
+        # LIST PRODUCTS
+        if message_lower == 'list' or message_lower == '2':
+            products = self.db.get_products()
+            if not products:
+                self.send_whatsapp_message(phone, "📋 No products found. Use ADD to add products.")
+            else:
+                response = "📋 *YOUR PRODUCTS*\n\n"
+                for p in products:
+                    response += f"🔖 *{p['name']}*\n"
+                    response += f"   Code: {p['code']}\n"
+                    response += f"   Price: KES {p['price']}\n"
+                    response += f"   Stock: {p['stock']}\n\n"
+                self.send_whatsapp_message(phone, response)
+            return True
+        
+        # LOGOUT
+        if message_lower == 'logout' or message_lower == '6':
+            if phone in self.admin_sessions:
+                del self.admin_sessions[phone]
+            self.send_whatsapp_message(phone, "🔐 *Logged out!* Your admin session has ended.\n\nSend *MENU* to continue shopping.")
+            return True
+        
+        # Check for awaiting product details
+        admin_state = self.sessions.get(phone, {}).get('admin_state', '')
+        
+        if admin_state == 'awaiting_product_details':
+            if message_lower == 'cancel':
+                self.sessions[phone]['admin_state'] = ''
+                self.show_admin_menu(phone)
+                return True
+            
+            try:
+                parts = [p.strip() for p in message.split(',')]
+                if len(parts) >= 3:
+                    name = parts[0]
+                    price = int(parts[1])
+                    stock = int(parts[2])
+                    
+                    # Generate product code
+                    code = name[:3].upper() + str(int(datetime.now().timestamp()))[-4:]
+                    
+                    conn = self.db.get_connection()
+                    conn.execute(
+                        'INSERT INTO products (code, name, price, stock) VALUES (?, ?, ?, ?)',
+                        (code, name, price, stock)
+                    )
+                    conn.commit()
+                    
+                    self.sessions[phone]['admin_state'] = ''
+                    response = f"✅ *Product Added!*\n\n📦 Name: {name}\n💰 Price: KES {price}\n📊 Stock: {stock}\n🔖 Code: {code}\n\nSend *ADMIN* for menu"
+                    self.send_whatsapp_message(phone, response)
+                else:
+                    self.send_whatsapp_message(phone, "❌ Please use format: `Name, Price, Stock`\nExample: `Wheat Flour, 250, 50`")
+            except Exception as e:
+                self.send_whatsapp_message(phone, f"❌ Error: {e}\nPlease use format: Name, Price, Stock")
+            return True
+        
+        # If not recognized, show menu
+        self.show_admin_menu(phone)
+        return True
+    
     def show_main_menu(self, phone):
-        """Show friendly menu"""
+        """Show customer menu"""
         products = self.db.get_products()
         if not products:
             return "📋 No products available. Please check back later."
@@ -217,25 +292,17 @@ class WhatsAppHandler:
         
         for idx, p in enumerate(products, 1):
             stock_status = "✅" if p['stock'] > 0 else "❌"
-            menu += f"{idx}. *{p['name']}* - KES {p['stock']}\n\n"
+            menu += f"{idx}. *{p['name']}* - KES {p['price']} {stock_status}\n"
         
-        menu += "─" * 30 + "\n\n"
+        menu += "\n" + "─" * 30 + "\n\n"
         menu += "📝 *How to order:*\n"
-        menu += "• Send the *NUMBER* of the product you want\n"
-        menu += "• Then send the *QUANTITY*\n"
-        menu += "• Add multiple items to your cart\n\n"
+        menu += "• Send the *NUMBER* of the product\n"
+        menu += "• Then send the *QUANTITY*\n\n"
         menu += "*Commands:*\n"
-        menu += "• `CART` - View your cart\n"
-        menu += "• `CHECKOUT` - Complete order\n"
-        menu += "• `STATUS` - See your orders\n"
-        menu += "• `CLEAR` - Clear cart\n"
-        menu += "• `HELP` - Show help\n\n"
+        menu += "• `CART` - View cart\n"
+        menu += "• `CHECKOUT` - Pay\n"
+        menu += "• `STATUS` - Your orders\n\n"
         menu += "💬 *Send a number to start shopping!*"
-        
-        session = self.sessions[phone]
-        if session['cart']:
-            total_items = sum(item['quantity'] for item in session['cart'])
-            menu += f"\n\n🛒 *You have {total_items} item(s) in your cart*\nSend *CART* to view or *CHECKOUT* to pay"
         
         return menu
     
@@ -244,17 +311,17 @@ class WhatsAppHandler:
         products = self.db.get_products()
         
         if product_number < 1 or product_number > len(products):
-            return "❌ Invalid selection. Please send a number from the menu."
+            return "❌ Invalid selection. Send a number from the menu."
         
         selected = products[product_number - 1]
         
         if selected['stock'] <= 0:
-            return f"❌ Sorry, {selected['name']} is currently out of stock. Please choose another product."
+            return f"❌ Sorry, {selected['name']} is out of stock."
         
         self.sessions[phone]['pending_product'] = selected
         self.sessions[phone]['state'] = 'awaiting_quantity'
         
-        return f"📦 *{selected['name']}*\n💰 Price: KES {selected['price']}\n📊 In stock: {selected['stock']}\n\n🔢 *How many would you like?* (Send a number, e.g., 2)\n\nSend *CANCEL* to go back."
+        return f"📦 *{selected['name']}*\n💰 Price: KES {selected['price']}\n📊 In stock: {selected['stock']}\n\n🔢 *How many?* (Send a number)\n\nSend *CANCEL* to cancel"
     
     def add_to_cart(self, phone, quantity):
         """Add to cart"""
@@ -263,15 +330,14 @@ class WhatsAppHandler:
         
         if not product:
             session['state'] = 'main_menu'
-            return "❌ Session expired. Please send *MENU* to start over."
+            return "❌ Session expired. Send *MENU* to start over."
         
         if quantity < 1:
-            return "❌ Quantity must be at least 1. Please try again."
+            return "❌ Quantity must be at least 1."
         
         if product['stock'] < quantity:
-            return f"❌ Sorry, only {product['stock']} units of {product['name']} available. Please enter a smaller quantity."
+            return f"❌ Only {product['stock']} available."
         
-        # Add to cart
         for item in session['cart']:
             if item['product_id'] == product['id']:
                 item['quantity'] += quantity
@@ -293,7 +359,7 @@ class WhatsAppHandler:
         total_items = sum(item['quantity'] for item in session['cart'])
         grand = session['total'] + 100
         
-        return f"✅ *Added {quantity}x {product['name']} to your cart!*\n\n🛒 *Cart summary:* {total_items} item(s) | Subtotal: KES {session['total']}\n🚚 Delivery: KES 100\n💰 Grand total: KES {grand}\n\nWhat would you like to do?\n• Send *MENU* to add more items\n• Send *CART* to view cart\n• Send *CHECKOUT* to pay"
+        return f"✅ *Added {quantity}x {product['name']}*\n\n🛒 Cart: {total_items} item(s)\n💰 Subtotal: KES {session['total']}\n🚚 Delivery: KES 100\n💵 Total: KES {grand}\n\nSend *CHECKOUT* to pay"
     
     def show_cart(self, phone):
         """Show cart"""
@@ -301,21 +367,14 @@ class WhatsAppHandler:
         
         if not session['cart']:
             session['state'] = 'main_menu'
-            return "🛒 *Your cart is empty*\n\nSend *MENU* to start shopping!"
+            return "🛒 Your cart is empty. Send *MENU* to shop!"
         
-        cart = "🛒 *YOUR SHOPPING CART*\n\n"
-        for i, item in enumerate(session['cart'], 1):
-            cart += f"{i}. *{item['product_name']}*\n"
-            cart += f"   Quantity: {item['quantity']} x KES {item['price']} = KES {item['subtotal']}\n\n"
+        cart = "🛒 *YOUR CART*\n\n"
+        for item in session['cart']:
+            cart += f"• {item['product_name']}: {item['quantity']} x KES {item['price']} = KES {item['subtotal']}\n"
         
-        cart += "─" * 30 + "\n"
-        cart += f"💰 *Subtotal:* KES {session['total']}\n"
-        cart += f"🚚 *Delivery fee:* KES 100\n"
-        cart += f"💵 *Grand Total:* KES {session['total'] + 100}\n\n"
-        cart += "📝 *What's next?*\n"
-        cart += "• Send *MENU* to add more items\n"
-        cart += "• Send *CHECKOUT* to complete order\n"
-        cart += "• Send *CLEAR* to empty cart"
+        grand = session['total'] + 100
+        cart += f"\n💰 Subtotal: KES {session['total']}\n🚚 Delivery: KES 100\n💵 Total: KES {grand}\n\nSend *CHECKOUT* to pay"
         
         return cart
     
@@ -325,12 +384,12 @@ class WhatsAppHandler:
         
         if not session['cart']:
             session['state'] = 'main_menu'
-            return "🛒 Your cart is empty. Send *MENU* to add items first."
+            return "🛒 Cart empty. Send *MENU* to add items."
         
         session['state'] = 'awaiting_address'
         grand_total = session['total'] + 100
         
-        return f"📍 *DELIVERY ADDRESS REQUIRED*\n\n📦 Items in cart: {len(session['cart'])}\n💰 Total amount: KES {grand_total}\n\n🏠 *Please send your delivery address:*\nExample: Westlands, Mpaka Road, Nairobi, Landmark: Near Westgate\n\nSend *CANCEL* to cancel checkout"
+        return f"📍 *DELIVERY ADDRESS*\n\nTotal: KES {grand_total}\n\nSend your address:\nExample: Westlands, Mpaka Road, Nairobi\n\nSend *CANCEL* to cancel"
     
     def save_address_and_payment(self, phone, address):
         """Save address"""
@@ -341,13 +400,12 @@ class WhatsAppHandler:
         session['order_id'] = order_id
         session['address'] = address
         
-        # Save order
         items_text = ", ".join([f"{item['quantity']}x {item['product_name']}" for item in session['cart']])
         self.db.create_order(order_id, phone, items_text, grand_total, address)
         
         session['state'] = 'awaiting_payment'
         
-        return f"✅ *ORDER #{order_id} SAVED!*\n\n📍 Delivery: {address}\n💰 Total: KES {grand_total}\n\n💳 *PAYMENT OPTIONS*\n• M-PESA (STK Push)\n• Credit/Debit Card\n• Bank Transfer\n\nReply *PAY* to complete your payment\nReply *CANCEL* to cancel order"
+        return f"✅ *Order #{order_id} Saved*\n📍 {address}\n💰 Total: KES {grand_total}\n\n💳 Reply *PAY* to complete payment"
     
     def process_payment(self, phone):
         """Process payment"""
@@ -358,42 +416,36 @@ class WhatsAppHandler:
         
         grand_total = session['total'] + 100
         
-        # Check if Paystack is configured
-        if not self.paystack_secret_key or self.paystack_secret_key == 'sk_live_your_key_here':
+        if not self.paystack_secret_key:
             return self.simulate_payment(phone)
         
         try:
-            self.send_whatsapp_message(phone, "⏳ *Processing your payment...* Please wait.")
+            self.send_whatsapp_message(phone, "⏳ Processing payment...")
             
             reference = f"ORDER_{session['order_id']}_{int(datetime.now().timestamp())}"
             amount_in_cents = int(grand_total * 100)
             clean_phone = phone.replace('+', '').replace('254', '')
             customer_email = f"customer_{clean_phone}@whatsappshop.com"
             
-            paystack_url = "https://api.paystack.co/transaction/initialize"
-            headers = {
-                "Authorization": f"Bearer {self.paystack_secret_key}",
-                "Content-Type": "application/json"
-            }
-            payload = {
-                "email": customer_email,
-                "amount": amount_in_cents,
-                "currency": "KES",
-                "reference": reference,
-                "channels": ["mobile_money", "card"],
-                "callback_url": os.getenv('PAYSTACK_CALLBACK_URL', ''),
-                "metadata": {
-                    "order_id": session['order_id'],
-                    "phone": phone
-                }
-            }
-            
-            response = requests.post(paystack_url, json=payload, headers=headers, timeout=30)
+            response = requests.post(
+                "https://api.paystack.co/transaction/initialize",
+                json={
+                    "email": customer_email,
+                    "amount": amount_in_cents,
+                    "currency": "KES",
+                    "reference": reference,
+                    "channels": ["mobile_money", "card"]
+                },
+                headers={
+                    "Authorization": f"Bearer {self.paystack_secret_key}",
+                    "Content-Type": "application/json"
+                },
+                timeout=30
+            )
             
             if response.status_code == 200:
                 data = response.json()
                 if data.get('status'):
-                    # Update stock
                     conn = self.db.get_connection()
                     for item in session['cart']:
                         product = self.db.get_product_by_name(item['product_name'])
@@ -406,25 +458,24 @@ class WhatsAppHandler:
                     session['state'] = 'order_confirmed'
                     payment_link = data['data']['authorization_url']
                     
-                    return f"💰 *PAYMENT READY*\n\n📦 Order: {session['order_id']}\n💵 Amount: KES {grand_total}\n\n📱 *M-PESA:* You'll receive an STK push\n💳 *Card/Bank:* {payment_link}\n\n✅ After payment, order will be confirmed.\nSend *STATUS* to check order."
+                    return f"💰 *PAYMENT READY*\n\nOrder: {session['order_id']}\nAmount: KES {grand_total}\n\n📱 M-PESA: STK push sent\n💳 Card: {payment_link}\n\n✅ Pay to confirm"
                 else:
-                    return f"❌ Payment error: {data.get('message')}\nPlease try again."
+                    return f"❌ Payment error: {data.get('message')}"
             else:
-                return "❌ Payment service error. Please try again."
+                return "❌ Payment service error. Try again"
         except Exception as e:
             print(f"Payment error: {e}")
-            return "❌ Payment error. Please try again."
+            return "❌ Payment error. Try again"
     
     def simulate_payment(self, phone):
         """Simulate payment for testing"""
         session = self.sessions.get(phone)
         
         if not session or not session.get('order_id'):
-            return "❌ No order found. Send *MENU* to start over."
+            return "❌ No order found."
         
         grand_total = session['total'] + 100
         
-        # Update stock
         conn = self.db.get_connection()
         for item in session['cart']:
             product = self.db.get_product_by_name(item['product_name'])
@@ -436,29 +487,19 @@ class WhatsAppHandler:
         self.db.update_order_status(session['order_id'], 'paid')
         session['state'] = 'order_confirmed'
         
-        return f"💰 *PAYMENT CONFIRMED!* (Demo Mode)\n\n📦 Order: {session['order_id']}\n💵 Amount: KES {grand_total}\n📍 Address: {session.get('address', 'N/A')}\n\n✅ Your order has been confirmed!\n🚚 We'll deliver within 2 hours.\n\nSend *STATUS* to check order, *MENU* to shop more."
-    
-    def track_order(self, phone, order_id):
-        """Track order"""
-        order = self.db.get_order(order_id)
-        if not order:
-            return f"❌ Order {order_id} not found."
-        
-        if order['phone'] != phone:
-            return "❌ You don't have permission to track this order."
-        
-        status_map = {'pending': '⏳ Pending Payment', 'paid': '✅ Paid - Preparing for delivery', 'delivered': '🎉 Delivered!'}
-        
-        return f"🚚 *ORDER {order_id}*\n\nItems: {order['items']}\nAmount: KES {order['amount']}\nAddress: {order['address']}\nStatus: {status_map.get(order['status'], order['status'])}"
+        return f"💰 *PAYMENT CONFIRMED!*\n\nOrder: {session['order_id']}\nAmount: KES {grand_total}\n📍 {session.get('address', 'N/A')}\n\n✅ Order confirmed! Delivery in 2 hours.\n\nSend *MENU* to shop more"
     
     def show_status(self, phone):
         """Show order history"""
         orders = self.db.get_customer_orders(phone)
         if not orders:
-            return "📋 You have no orders yet. Send *MENU* to start shopping!"
+            return "No orders yet. Send *MENU* to start shopping!"
         
-        response = "📊 *YOUR ORDER HISTORY*\n\n"
+        response = "📊 *YOUR ORDERS*\n\n"
         for order in orders[:5]:
             status_icon = "✅" if order['status'] == 'paid' else "⏳"
-            response += f"{status_icon} *{order['order_id']}* - {order['items']} - KES {order['amount']}\n"
+            response += f"{status_icon} *{order['order_id']}*\n"
+            response += f"   {order['items']}\n"
+            response += f"   KES {order['amount']}\n\n"
+        
         return response
