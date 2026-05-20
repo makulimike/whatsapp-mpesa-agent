@@ -2,6 +2,7 @@ import re
 import uuid
 import requests
 import os
+import json
 from datetime import datetime, timedelta
 from database import Database
 from flaresend_client import FlaresendClient
@@ -14,8 +15,58 @@ class WhatsAppHandler:
         self.admin_password = os.getenv('ADMIN_PASSWORD', '1039')
         self.paystack_secret_key = os.getenv('PAYSTACK_SECRET_KEY', '')
         self.flaresend = FlaresendClient()
+        
+        # Load shop settings
+        self.shop_settings = self.load_shop_settings()
+        
         print(f"✅ WhatsApp Shop Agent Ready")
         print(f"🔐 Admin password loaded: {'SET' if self.admin_password else 'NOT SET'}")
+        print(f"🏪 Shop name: {self.shop_settings.get('name', 'Our Shop')}")
+    
+    def load_shop_settings(self):
+        """Load shop settings from database"""
+        try:
+            conn = self.db.get_connection()
+            cursor = conn.execute("SELECT * FROM settings WHERE key = 'shop_name'")
+            row = cursor.fetchone()
+            
+            if row:
+                return {'name': row['value']}
+            else:
+                # Create default settings
+                conn.execute("INSERT INTO settings (key, value) VALUES ('shop_name', 'Our Shop')")
+                conn.commit()
+                return {'name': 'Our Shop'}
+        except:
+            # Settings table might not exist yet
+            conn = self.db.get_connection()
+            conn.execute('''
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT
+                )
+            ''')
+            conn.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('shop_name', 'Our Shop')")
+            conn.commit()
+            return {'name': 'Our Shop'}
+    
+    def save_shop_settings(self):
+        """Save shop settings to database"""
+        try:
+            conn = self.db.get_connection()
+            conn.execute("UPDATE settings SET value = ? WHERE key = 'shop_name'", (self.shop_settings['name'],))
+            conn.commit()
+        except Exception as e:
+            print(f"Error saving shop settings: {e}")
+    
+    def get_shop_name(self):
+        """Get current shop name"""
+        return self.shop_settings.get('name', 'Our Shop')
+    
+    def set_shop_name(self, new_name):
+        """Set new shop name"""
+        self.shop_settings['name'] = new_name
+        self.save_shop_settings()
     
     def send_whatsapp_message(self, to_number: str, message: str):
         """Send message"""
@@ -33,8 +84,9 @@ class WhatsAppHandler:
     
     def show_admin_menu(self, phone):
         """Show admin menu options"""
+        shop_name = self.get_shop_name()
         menu = "🔐 *ADMIN PANEL*\n\n"
-        menu += "You are logged in as Admin.\n\n"
+        menu += f"🏪 *Current Shop Name:* {shop_name}\n\n"
         menu += "*What would you like to do?*\n\n"
         menu += "📦 *1. ADD PRODUCT*\n"
         menu += "   Send: ADD\n\n"
@@ -46,7 +98,9 @@ class WhatsAppHandler:
         menu += "   Send: STOCK\n\n"
         menu += "🗑️ *5. DELETE PRODUCT*\n"
         menu += "   Send: DELETE\n\n"
-        menu += "🔓 *6. LOGOUT*\n"
+        menu += "🏪 *6. CHANGE SHOP NAME*\n"
+        menu += "   Send: SHOP NAME\n\n"
+        menu += "🔓 *7. LOGOUT*\n"
         menu += "   Send: LOGOUT\n\n"
         menu += "Type the command number or name to continue."
         
@@ -78,8 +132,23 @@ class WhatsAppHandler:
                 self.send_whatsapp_message(phone, response)
             return True
         
+        # CHANGE SHOP NAME
+        if message_lower.startswith('shop name'):
+            parts = message.split(' ', 2)
+            if len(parts) >= 3:
+                new_name = parts[2].strip()
+                old_name = self.get_shop_name()
+                self.set_shop_name(new_name)
+                self.send_whatsapp_message(phone, f"✅ *Shop Name Changed!*\n\nOld name: {old_name}\nNew name: {new_name}")
+            else:
+                current_name = self.get_shop_name()
+                self.sessions[phone] = self.sessions.get(phone, {})
+                self.sessions[phone]['admin_state'] = 'awaiting_shop_name'
+                self.send_whatsapp_message(phone, f"🏪 *CHANGE SHOP NAME*\n\nCurrent shop name: {current_name}\n\nSend the new shop name:\nExample: `Mike's Groceries`\n\nSend *CANCEL* to cancel")
+            return True
+        
         # LOGOUT
-        if message_lower == 'logout' or message_lower == '6':
+        if message_lower == 'logout' or message_lower == '7':
             if phone in self.admin_sessions:
                 del self.admin_sessions[phone]
             self.send_whatsapp_message(phone, "🔐 *Logged out!* Your admin session has ended.\n\nSend *MENU* to continue shopping.")
@@ -101,7 +170,6 @@ class WhatsAppHandler:
                     price = int(parts[1])
                     stock = int(parts[2])
                     
-                    # Generate product code
                     code = name[:3].upper() + str(int(datetime.now().timestamp()))[-4:]
                     
                     conn = self.db.get_connection()
@@ -118,6 +186,19 @@ class WhatsAppHandler:
                     self.send_whatsapp_message(phone, "❌ Please use format: `Name, Price, Stock`\nExample: `Wheat Flour, 250, 50`")
             except Exception as e:
                 self.send_whatsapp_message(phone, f"❌ Error: {e}\nPlease use format: Name, Price, Stock")
+            return True
+        
+        if admin_state == 'awaiting_shop_name':
+            if message_lower == 'cancel':
+                self.sessions[phone]['admin_state'] = ''
+                self.show_admin_menu(phone)
+                return True
+            
+            new_name = message.strip()
+            old_name = self.get_shop_name()
+            self.set_shop_name(new_name)
+            self.sessions[phone]['admin_state'] = ''
+            self.send_whatsapp_message(phone, f"✅ *Shop Name Changed!*\n\nOld: {old_name}\nNew: {new_name}\n\nSend *ADMIN* for menu")
             return True
         
         # If not recognized, show menu
@@ -147,13 +228,11 @@ class WhatsAppHandler:
         
         # ============ SECOND: Check if logged in as admin ============
         if self.is_admin(phone):
-            # Handle admin commands - this must come BEFORE customer commands
             if self.handle_admin_command(phone, message):
                 return
         
         # ============ THIRD: Customer flow ============
         
-        # Initialize session for customers
         if phone not in self.sessions:
             self.sessions[phone] = {
                 'cart': [],
@@ -167,12 +246,12 @@ class WhatsAppHandler:
         
         # ============ GREETINGS ============
         if message_lower in ['hi', 'hello', 'hey', 'hola', 'jambo', 'sasa']:
-            response = f"👋 *Hello!* Welcome to our shop! 😊\n\n{self.show_main_menu(phone)}"
+            response = f"👋 *Hello!* Welcome to {self.get_shop_name()}! 😊\n\n{self.show_main_menu(phone)}"
             self.send_whatsapp_message(phone, response)
             return
         
         if message_lower in ['thank you', 'thanks', 'asante']:
-            response = "🙏 *You're welcome!* Send *MENU* to see our products."
+            response = f"🙏 *You're welcome!* Thank you for shopping at {self.get_shop_name()}."
             self.send_whatsapp_message(phone, response)
             return
         
@@ -284,12 +363,14 @@ class WhatsAppHandler:
     def show_main_menu(self, phone):
         """Show customer menu"""
         products = self.db.get_products()
+        shop_name = self.get_shop_name()
+        
         if not products:
-            return "📋 No products available. Please check back later."
+            return f"📋 {shop_name} - No products available. Please check back later."
         
         self.sessions[phone]['state'] = 'main_menu'
         
-        menu = "🛒 *WELCOME TO OUR SHOP* 🛒\n\n"
+        menu = f"🛒 *WELCOME TO {shop_name.upper()}* 🛒\n\n"
         menu += "*Here are our products:*\n\n"
         
         for idx, p in enumerate(products, 1):
@@ -304,7 +385,7 @@ class WhatsAppHandler:
         menu += "• `CART` - View cart\n"
         menu += "• `CHECKOUT` - Pay\n"
         menu += "• `STATUS` - Your orders\n\n"
-        menu += "💬 *Send a number to start shopping!*"
+        menu += f"💬 *Send a number to start shopping at {shop_name}!*"
         
         return menu
     
