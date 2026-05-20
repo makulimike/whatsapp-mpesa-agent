@@ -16,10 +16,14 @@ class WhatsAppHandler:
         self.paystack_secret_key = os.getenv('PAYSTACK_SECRET_KEY', '')
         self.flaresend = FlaresendClient()
         
+        # Cart expiration time (hours) - Cart clears after 2 hours of inactivity
+        self.cart_expiry_hours = 2
+        
         self.shop_settings = self.load_shop_settings()
         
         print(f"✅ Intelligent WhatsApp Shop Agent Ready")
         print(f"🏪 Shop: {self.shop_settings.get('name', 'Our Shop')}")
+        print(f"⏰ Cart expires after {self.cart_expiry_hours} hours of inactivity")
     
     def load_shop_settings(self):
         try:
@@ -64,6 +68,32 @@ class WhatsAppHandler:
             else:
                 del self.admin_sessions[phone]
         return False
+    
+    def is_cart_expired(self, session):
+        """Check if cart has expired due to inactivity"""
+        if 'last_activity' in session:
+            last_active = session['last_activity']
+            if datetime.now() - last_active > timedelta(hours=self.cart_expiry_hours):
+                return True
+        return False
+    
+    def clear_cart(self, phone):
+        """Clear the user's cart completely"""
+        if phone in self.sessions:
+            self.sessions[phone]['cart'] = []
+            self.sessions[phone]['total'] = 0
+            self.sessions[phone]['state'] = 'main_menu'
+            self.sessions[phone]['pending_product'] = None
+            self.sessions[phone]['order_id'] = None
+            self.sessions[phone]['address'] = None
+            self.sessions[phone]['last_activity'] = datetime.now()
+            return True
+        return False
+    
+    def update_activity(self, phone):
+        """Update last activity timestamp"""
+        if phone in self.sessions:
+            self.sessions[phone]['last_activity'] = datetime.now()
     
     def show_admin_menu(self, phone):
         shop_name = self.get_shop_name()
@@ -336,7 +366,7 @@ class WhatsAppHandler:
         return True
     
     def process_message(self, phone, message):
-        """Intelligent message processing with location support"""
+        """Intelligent message processing with cart management"""
         message = message.strip()
         message_lower = message.lower()
         
@@ -362,14 +392,30 @@ class WhatsAppHandler:
         
         # Initialize customer session
         if phone not in self.sessions:
-            self.sessions[phone] = {'cart': [], 'state': 'main_menu', 'order_id': None, 'total': 0}
+            self.sessions[phone] = {
+                'cart': [], 
+                'state': 'main_menu', 
+                'order_id': None, 
+                'total': 0,
+                'last_activity': datetime.now()
+            }
             self.send_whatsapp_message(phone, self.get_welcome_message())
             return
         
         session = self.sessions[phone]
+        
+        # Check if cart has expired
+        if self.is_cart_expired(session) and session['cart']:
+            self.clear_cart(phone)
+            self.send_whatsapp_message(phone, "🕐 *Cart Expired*\n\nYour cart has been cleared due to inactivity (>2 hours).\n\nSend *MENU* to start fresh!")
+            return
+        
+        # Update last activity
+        self.update_activity(phone)
+        
         state = session['state']
         
-        # Check if this is a location message (contains coordinates)
+        # Check if this is a location message
         is_location = self.is_location_message(message)
         
         # Intelligent greeting responses
@@ -386,6 +432,14 @@ class WhatsAppHandler:
         if message_lower in ['bye', 'goodbye', 'kwaheri']:
             response = f"👋 *Goodbye!* Thank you for visiting {self.get_shop_name()}.\n\nCome back anytime!"
             self.send_whatsapp_message(phone, response)
+            return
+        
+        # CLEAR CART command
+        if message_lower == 'clear' or message_lower == 'clear cart':
+            if self.clear_cart(phone):
+                self.send_whatsapp_message(phone, "🗑️ *Cart Cleared!*\n\nYour shopping cart has been emptied.\n\nSend *MENU* to start fresh.")
+            else:
+                self.send_whatsapp_message(phone, "🛒 Your cart is already empty. Send *MENU* to start shopping.")
             return
         
         # MAIN MENU
@@ -415,15 +469,9 @@ class WhatsAppHandler:
                 self.send_whatsapp_message(phone, response)
                 return
             
-            if message_lower == 'clear':
-                session['cart'] = []
-                session['total'] = 0
-                self.send_whatsapp_message(phone, "🗑️ Cart cleared. Send *MENU* to continue shopping.")
-                return
-            
             # Natural language understanding
             if 'want' in message_lower or 'order' in message_lower or 'buy' in message_lower:
-                response = "🛒 I'd love to help you order!\n\nSend *MENU* to see our products, then just send the product number and quantity.\n\nExample: Send `2` then `3` for 3 items."
+                response = "🛒 I'd love to help you order!\n\nSend *MENU* to see our products, then just send the product number and quantity.\n\nExample: Send `2` then `3` for 3 items.\n\nTo clear your cart, send *CLEAR*"
                 self.send_whatsapp_message(phone, response)
                 return
             
@@ -466,42 +514,36 @@ class WhatsAppHandler:
                 self.send_whatsapp_message(phone, response)
                 return
             if message_lower == 'clear':
-                session['cart'] = []
-                session['total'] = 0
-                session['state'] = 'main_menu'
-                self.send_whatsapp_message(phone, "🗑️ Cart cleared. Send *MENU* to continue shopping.")
+                self.clear_cart(phone)
+                self.send_whatsapp_message(phone, "🗑️ *Cart Cleared!*\n\nYour cart is now empty. Send *MENU* to start fresh.")
                 return
             response = self.show_cart(phone)
             self.send_whatsapp_message(phone, response)
             return
         
-        # AWAITING ADDRESS - with location option
+        # AWAITING ADDRESS
         if state == 'awaiting_address':
             if message_lower == 'cancel':
                 session['state'] = 'main_menu'
                 self.send_whatsapp_message(phone, "❌ Checkout cancelled. Send *MENU* to continue.")
                 return
             
-            # Check if message contains location (coordinates)
             if is_location:
-                # Extract coordinates from location message
                 address = self.format_location_address(message)
                 response = self.save_address_and_payment(phone, address)
                 self.send_whatsapp_message(phone, response)
                 return
             
-            # If user wants to share location (text response)
             if message_lower == 'share location' or message_lower == 'share my location':
-                self.send_whatsapp_message(phone, "📍 *Share Your Location*\n\nPlease tap the attachment icon 📎 in WhatsApp, then select 'Location' and share your current location.\n\nOr type your address manually.")
+                self.send_whatsapp_message(phone, "📍 *Share Your Location*\n\nPlease tap the attachment icon 📎 in WhatsApp, then select 'Location' and share your current location.\n\nOr type your address manually.\n\nSend *CANCEL* to cancel.")
                 return
             
-            # Manual address entry
             if len(message) > 5:
                 response = self.save_address_and_payment(phone, message)
                 self.send_whatsapp_message(phone, response)
                 return
             else:
-                self.send_whatsapp_message(phone, "📍 *Delivery Address*\n\nPlease send your full delivery address, or tap the attachment icon 📎 and share your current location.\n\nExample: Westlands, Mpaka Road, Nairobi\n\nSend *CANCEL* to cancel")
+                self.send_whatsapp_message(phone, "📍 *Delivery Address*\n\nPlease send your full delivery address, or tap the attachment icon 📎 and share your current location.\n\nExample: Westlands, Mpaka Road, Nairobi\n\nSend *CLEAR* to clear cart\nSend *CANCEL* to cancel")
                 return
         
         # AWAITING PAYMENT
@@ -509,12 +551,19 @@ class WhatsAppHandler:
             if message_lower == 'pay':
                 response = self.process_payment(phone)
                 self.send_whatsapp_message(phone, response)
+                # Clear cart after successful payment
+                if 'order_confirmed' in session and session['state'] == 'order_confirmed':
+                    self.clear_cart(phone)
                 return
             if message_lower == 'cancel':
                 session['state'] = 'main_menu'
                 self.send_whatsapp_message(phone, "❌ Payment cancelled. Send *MENU* to continue.")
                 return
-            self.send_whatsapp_message(phone, "💳 Reply *PAY* to complete payment or *CANCEL* to cancel.")
+            if message_lower == 'clear':
+                self.clear_cart(phone)
+                self.send_whatsapp_message(phone, "🗑️ *Cart Cleared!*\n\nYour cart has been emptied. Send *MENU* to start fresh.")
+                return
+            self.send_whatsapp_message(phone, "💳 Reply *PAY* to complete payment, *CLEAR* to clear cart, or *CANCEL* to cancel.")
             return
         
         # Default
@@ -523,11 +572,10 @@ class WhatsAppHandler:
     
     def is_location_message(self, message):
         """Check if message contains location coordinates"""
-        # Check for Google Maps links or coordinate patterns
         location_patterns = [
             r'https?://maps\.google\.com',
             r'https?://www\.google\.com/maps',
-            r'@[-?\d.]+,[-?\d.]+',  # Coordinates like @-1.2837,36.8212
+            r'@[-?\d.]+,[-?\d.]+',
             r'latitude.*longitude',
             r'location'
         ]
@@ -539,21 +587,19 @@ class WhatsAppHandler:
     
     def format_location_address(self, message):
         """Format location message into readable address"""
-        # Try to extract coordinates from Google Maps links
         coord_match = re.search(r'@([-\d.]+),([-\d.]+)', message)
         if coord_match:
             lat = coord_match.group(1)
             lng = coord_match.group(2)
-            return f"📍 Shared Location (Lat: {lat}, Lng: {lng}) - Customer's current location"
+            return f"📍 Shared Location (Lat: {lat}, Lng: {lng})"
         
-        # Try to extract from other formats
         if 'maps.google.com' in message or 'google.com/maps' in message:
             return "📍 Shared Location - Customer shared their location via Google Maps"
         
         return "📍 Shared Location - Customer's current location"
     
     def get_welcome_message(self):
-        return f"👋 *Welcome to {self.get_shop_name()}!*\n\nWe're excited to serve you! 😊\n\nSend *MENU* to see our products and start shopping."
+        return f"👋 *Welcome to {self.get_shop_name()}!*\n\nWe're excited to serve you! 😊\n\nSend *MENU* to see our products and start shopping.\n\n🛒 Send *CLEAR* to clear your cart at any time."
     
     def get_admin_greeting(self):
         return f"✨ You can now manage {self.get_shop_name()}.\n\nWhat would you like to do today?"
@@ -565,7 +611,8 @@ class WhatsAppHandler:
         if not products:
             return f"📋 {shop_name} - No products available. Please check back later."
         
-        self.sessions[phone]['state'] = 'main_menu'
+        session = self.sessions[phone]
+        session['state'] = 'main_menu'
         
         menu = f"🛒 *{shop_name.upper()}* 🛒\n\n"
         menu += "*Our products:*\n\n"
@@ -581,13 +628,13 @@ class WhatsAppHandler:
         menu += "*Commands:*\n"
         menu += "`CART` - View cart\n"
         menu += "`CHECKOUT` - Pay\n"
-        menu += "`STATUS` - Your orders\n\n"
+        menu += "`STATUS` - Your orders\n"
+        menu += "`CLEAR` - Clear cart\n\n"
         menu += f"Send a number to start shopping at {shop_name}!"
         
-        session = self.sessions[phone]
         if session['cart']:
             total_items = sum(item['quantity'] for item in session['cart'])
-            menu += f"\n\n🛒 *You have {total_items} item(s) in cart*"
+            menu += f"\n\n🛒 *You have {total_items} item(s) in cart*\nSend *CLEAR* to empty cart"
         
         return menu
     
@@ -602,8 +649,9 @@ class WhatsAppHandler:
         if selected['stock'] <= 0:
             return f"❌ Sorry, {selected['name']} is out of stock."
         
-        self.sessions[phone]['pending_product'] = selected
-        self.sessions[phone]['state'] = 'awaiting_quantity'
+        session = self.sessions[phone]
+        session['pending_product'] = selected
+        session['state'] = 'awaiting_quantity'
         
         return f"📦 *{selected['name']}*\n💰 Price: KES {selected['price']}\n📊 In stock: {selected['stock']}\n\n🔢 *How many would you like?*\nSend a number (e.g., 2)\n\nSend *CANCEL* to cancel"
     
@@ -642,7 +690,7 @@ class WhatsAppHandler:
         total_items = sum(item['quantity'] for item in session['cart'])
         grand = session['total'] + 100
         
-        return f"✅ *Added {quantity}x {product['name']} to your cart!*\n\n🛒 Cart: {total_items} item(s)\n💰 Subtotal: KES {session['total']}\n🚚 Delivery: KES 100\n💵 Total: KES {grand}\n\nSend *CHECKOUT* to pay or *MENU* for more items"
+        return f"✅ *Added {quantity}x {product['name']} to your cart!*\n\n🛒 Cart: {total_items} item(s)\n💰 Subtotal: KES {session['total']}\n🚚 Delivery: KES 100\n💵 Total: KES {grand}\n\nSend *CHECKOUT* to pay, *MENU* for more, or *CLEAR* to clear cart"
     
     def show_cart(self, phone):
         session = self.sessions[phone]
@@ -652,16 +700,15 @@ class WhatsAppHandler:
             return "🛒 Your cart is empty. Send *MENU* to start shopping!"
         
         cart = "🛒 *YOUR CART*\n\n"
-        for item in session['cart']:
-            cart += f"• {item['product_name']}: {item['quantity']} x KES {item['price']} = KES {item['subtotal']}\n"
+        for i, item in enumerate(session['cart'], 1):
+            cart += f"{i}. {item['product_name']}: {item['quantity']} x KES {item['price']} = KES {item['subtotal']}\n"
         
         grand = session['total'] + 100
-        cart += f"\n💰 Subtotal: KES {session['total']}\n🚚 Delivery: KES 100\n💵 Total: KES {grand}\n\nSend *CHECKOUT* to complete order"
+        cart += f"\n💰 Subtotal: KES {session['total']}\n🚚 Delivery: KES 100\n💵 Total: KES {grand}\n\nSend *CHECKOUT* to complete order\nSend *CLEAR* to empty cart\nSend *MENU* to add more items"
         
         return cart
     
     def start_checkout(self, phone):
-        """Start checkout with location option"""
         session = self.sessions[phone]
         
         if not session['cart']:
@@ -671,7 +718,7 @@ class WhatsAppHandler:
         session['state'] = 'awaiting_address'
         grand_total = session['total'] + 100
         
-        return f"📍 *Delivery Information*\n\nTotal: KES {grand_total}\n\n*How would you like to provide your address?*\n\n1️⃣ *Share Location* - Tap the attachment icon 📎 and select 'Location' to share your current location\n\n2️⃣ *Type Manually* - Send your full address\n\nExample: Westlands, Mpaka Road, Nairobi\n\nSend *CANCEL* to cancel"
+        return f"📍 *Delivery Information*\n\nTotal: KES {grand_total}\n\n*How would you like to provide your address?*\n\n1️⃣ *Share Location* - Tap the attachment icon 📎 and select 'Location' to share your current location\n\n2️⃣ *Type Manually* - Send your full address\n\nExample: Westlands, Mpaka Road, Nairobi\n\nSend *CLEAR* to clear cart\nSend *CANCEL* to cancel"
     
     def save_address_and_payment(self, phone, address):
         session = self.sessions[phone]
@@ -686,7 +733,7 @@ class WhatsAppHandler:
         
         session['state'] = 'awaiting_payment'
         
-        return f"✅ *Order #{order_id} created!*\n📍 Delivery: {address}\n💰 Total: KES {grand_total}\n\n💳 *Payment Options:*\n• M-PESA (STK Push)\n• Credit/Debit Card\n• Bank Transfer\n\nReply *PAY* to complete payment\nReply *CANCEL* to cancel"
+        return f"✅ *Order #{order_id} created!*\n📍 Delivery: {address}\n💰 Total: KES {grand_total}\n\n💳 *Payment Options:*\n• M-PESA (STK Push)\n• Credit/Debit Card\n• Bank Transfer\n\nReply *PAY* to complete payment\nReply *CLEAR* to clear cart\nReply *CANCEL* to cancel"
     
     def process_payment(self, phone):
         session = self.sessions.get(phone)
@@ -697,7 +744,10 @@ class WhatsAppHandler:
         grand_total = session['total'] + 100
         
         if not self.paystack_secret_key:
-            return self.simulate_payment(phone)
+            result = self.simulate_payment(phone)
+            # Clear cart after successful payment
+            self.clear_cart(phone)
+            return result
         
         try:
             self.send_whatsapp_message(phone, "⏳ Processing your payment... Please wait.")
@@ -737,6 +787,9 @@ class WhatsAppHandler:
                     self.db.update_order_status(session['order_id'], 'pending')
                     session['state'] = 'order_confirmed'
                     payment_link = data['data']['authorization_url']
+                    
+                    # Clear cart after successful payment
+                    self.clear_cart(phone)
                     
                     return f"💰 *PAYMENT READY*\n\n📦 *Order:* {session['order_id']}\n💵 *Amount:* KES {grand_total}\n\n🔗 *Click the link below to complete payment:*\n{payment_link}\n\n📱 *On the Paystack page you can pay with:*\n• M-PESA (STK push to your phone)\n• Credit/Debit Card\n• Bank Transfer\n\n✅ Payment is automatic - your order will be confirmed instantly.\n\nSend *STATUS* to check order status."
                 else:
