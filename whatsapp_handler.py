@@ -16,7 +16,7 @@ class WhatsAppHandler:
         self.flaresend = FlaresendClient()
         
         # Cart expiration time (hours) - Cart clears after 2 hours of inactivity
-        self.cart_expiry_hours = 2
+        self.cart_expiry_hours = 1
         
         print(f"✅ Intelligent WhatsApp Shop Agent Ready")
         print(f"🏪 Shop: {self.db.get_shop_name()}")
@@ -677,7 +677,7 @@ class WhatsAppHandler:
             return "🛒 Your cart is empty. Send *MENU* to add items."
         
         session['state'] = 'awaiting_address'
-        grand_total = session['total'] + 100
+        grand_total = session['total'] + 0
         
         return f"📍 *Delivery Information*\n\nTotal: KES {grand_total}\n\n*How would you like to provide your address?*\n\n1️⃣ *Share Location* - Tap the attachment icon 📎 and select 'Location' to share your current location\n\n2️⃣ *Type Manually* - Send your full address\n\nExample: Westlands, Mpaka Road, Nairobi\n\nSend *CLEAR* to clear cart\nSend *CANCEL* to cancel"
     
