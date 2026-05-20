@@ -11,7 +11,7 @@ class WhatsAppHandler:
         self.db = Database()
         self.sessions = {}
         self.admin_sessions = {}  # Track admin logins
-        self.admin_password = os.getenv('ADMIN_PASSWORD', '1039')  # From Render env
+        self.admin_password = os.getenv('ADMIN_PASSWORD', '1039')
         self.paystack_secret_key = os.getenv('PAYSTACK_SECRET_KEY', '')
         self.flaresend = FlaresendClient()
         print(f"✅ WhatsApp Shop Agent Ready")
@@ -52,13 +52,84 @@ class WhatsAppHandler:
         
         self.send_whatsapp_message(phone, menu)
     
+    def handle_admin_command(self, phone, message):
+        """Handle admin commands when logged in"""
+        message_lower = message.lower().strip()
+        
+        # ADD PRODUCT
+        if message_lower == 'add' or message_lower == '1':
+            self.sessions[phone] = self.sessions.get(phone, {})
+            self.sessions[phone]['admin_state'] = 'awaiting_product_details'
+            self.send_whatsapp_message(phone, "📦 *ADD PRODUCT*\n\nSend product details in format:\n`Name, Price, Stock`\n\nExample: `Wheat Flour, 250, 50`\n\nSend *CANCEL* to cancel")
+            return True
+        
+        # LIST PRODUCTS
+        if message_lower == 'list' or message_lower == '2':
+            products = self.db.get_products()
+            if not products:
+                self.send_whatsapp_message(phone, "📋 No products found. Use ADD to add products.")
+            else:
+                response = "📋 *YOUR PRODUCTS*\n\n"
+                for p in products:
+                    response += f"🔖 *{p['name']}*\n"
+                    response += f"   Code: {p['code']}\n"
+                    response += f"   Price: KES {p['price']}\n"
+                    response += f"   Stock: {p['stock']}\n\n"
+                self.send_whatsapp_message(phone, response)
+            return True
+        
+        # LOGOUT
+        if message_lower == 'logout' or message_lower == '6':
+            if phone in self.admin_sessions:
+                del self.admin_sessions[phone]
+            self.send_whatsapp_message(phone, "🔐 *Logged out!* Your admin session has ended.\n\nSend *MENU* to continue shopping.")
+            return True
+        
+        # Check for awaiting product details
+        admin_state = self.sessions.get(phone, {}).get('admin_state', '')
+        
+        if admin_state == 'awaiting_product_details':
+            if message_lower == 'cancel':
+                self.sessions[phone]['admin_state'] = ''
+                self.show_admin_menu(phone)
+                return True
+            
+            try:
+                parts = [p.strip() for p in message.split(',')]
+                if len(parts) >= 3:
+                    name = parts[0]
+                    price = int(parts[1])
+                    stock = int(parts[2])
+                    
+                    # Generate product code
+                    code = name[:3].upper() + str(int(datetime.now().timestamp()))[-4:]
+                    
+                    conn = self.db.get_connection()
+                    conn.execute(
+                        'INSERT INTO products (code, name, price, stock) VALUES (?, ?, ?, ?)',
+                        (code, name, price, stock)
+                    )
+                    conn.commit()
+                    
+                    self.sessions[phone]['admin_state'] = ''
+                    response = f"✅ *Product Added!*\n\n📦 Name: {name}\n💰 Price: KES {price}\n📊 Stock: {stock}\n🔖 Code: {code}\n\nSend *ADMIN* for menu"
+                    self.send_whatsapp_message(phone, response)
+                else:
+                    self.send_whatsapp_message(phone, "❌ Please use format: `Name, Price, Stock`\nExample: `Wheat Flour, 250, 50`")
+            except Exception as e:
+                self.send_whatsapp_message(phone, f"❌ Error: {e}\nPlease use format: Name, Price, Stock")
+            return True
+        
+        # If not recognized, show menu
+        self.show_admin_menu(phone)
+        return True
+    
     def process_message(self, phone, message):
         """Process message - Main entry point"""
         message = message.strip()
         message_lower = message.lower()
         
-        # ============ FIRST: Check for admin commands ============
-        # Admin login attempt (starts with 'admin')
+        # ============ FIRST: Check for admin login ============
         if message_lower.startswith('admin'):
             parts = message.split()
             if len(parts) >= 2:
@@ -74,11 +145,13 @@ class WhatsAppHandler:
                 self.send_whatsapp_message(phone, "🔐 *Admin Access*\n\nPlease send your password:\n`ADMIN your_password`\n\nExample: `ADMIN 1039`")
                 return
         
-        # Check if user is logged in as admin
+        # ============ SECOND: Check if logged in as admin ============
         if self.is_admin(phone):
-            # Handle admin commands
+            # Handle admin commands - this must come BEFORE customer commands
             if self.handle_admin_command(phone, message):
                 return
+        
+        # ============ THIRD: Customer flow ============
         
         # Initialize session for customers
         if phone not in self.sessions:
@@ -207,77 +280,6 @@ class WhatsAppHandler:
         # Default
         response = self.show_main_menu(phone)
         self.send_whatsapp_message(phone, response)
-    
-    def handle_admin_command(self, phone, message):
-        """Handle admin commands when logged in"""
-        message_lower = message.lower().strip()
-        
-        # ADD PRODUCT
-        if message_lower == 'add' or message_lower == '1':
-            self.sessions[phone]['admin_state'] = 'awaiting_product_details'
-            self.send_whatsapp_message(phone, "📦 *ADD PRODUCT*\n\nSend product details in format:\n`Name, Price, Stock`\n\nExample: `Wheat Flour, 250, 50`\n\nSend *CANCEL* to cancel")
-            return True
-        
-        # LIST PRODUCTS
-        if message_lower == 'list' or message_lower == '2':
-            products = self.db.get_products()
-            if not products:
-                self.send_whatsapp_message(phone, "📋 No products found. Use ADD to add products.")
-            else:
-                response = "📋 *YOUR PRODUCTS*\n\n"
-                for p in products:
-                    response += f"🔖 *{p['name']}*\n"
-                    response += f"   Code: {p['code']}\n"
-                    response += f"   Price: KES {p['price']}\n"
-                    response += f"   Stock: {p['stock']}\n\n"
-                self.send_whatsapp_message(phone, response)
-            return True
-        
-        # LOGOUT
-        if message_lower == 'logout' or message_lower == '6':
-            if phone in self.admin_sessions:
-                del self.admin_sessions[phone]
-            self.send_whatsapp_message(phone, "🔐 *Logged out!* Your admin session has ended.\n\nSend *MENU* to continue shopping.")
-            return True
-        
-        # Check for awaiting product details
-        admin_state = self.sessions.get(phone, {}).get('admin_state', '')
-        
-        if admin_state == 'awaiting_product_details':
-            if message_lower == 'cancel':
-                self.sessions[phone]['admin_state'] = ''
-                self.show_admin_menu(phone)
-                return True
-            
-            try:
-                parts = [p.strip() for p in message.split(',')]
-                if len(parts) >= 3:
-                    name = parts[0]
-                    price = int(parts[1])
-                    stock = int(parts[2])
-                    
-                    # Generate product code
-                    code = name[:3].upper() + str(int(datetime.now().timestamp()))[-4:]
-                    
-                    conn = self.db.get_connection()
-                    conn.execute(
-                        'INSERT INTO products (code, name, price, stock) VALUES (?, ?, ?, ?)',
-                        (code, name, price, stock)
-                    )
-                    conn.commit()
-                    
-                    self.sessions[phone]['admin_state'] = ''
-                    response = f"✅ *Product Added!*\n\n📦 Name: {name}\n💰 Price: KES {price}\n📊 Stock: {stock}\n🔖 Code: {code}\n\nSend *ADMIN* for menu"
-                    self.send_whatsapp_message(phone, response)
-                else:
-                    self.send_whatsapp_message(phone, "❌ Please use format: `Name, Price, Stock`\nExample: `Wheat Flour, 250, 50`")
-            except Exception as e:
-                self.send_whatsapp_message(phone, f"❌ Error: {e}\nPlease use format: Name, Price, Stock")
-            return True
-        
-        # If not recognized, show menu
-        self.show_admin_menu(phone)
-        return True
     
     def show_main_menu(self, phone):
         """Show customer menu"""
