@@ -42,6 +42,52 @@ class Database:
             print(f"Error: {e}")
             return None
     
+    def add_product(self, name, price, stock):
+        """Add new product"""
+        try:
+            code = name[:3].upper() + str(int(datetime.now().timestamp()))[-4:]
+            result = self.supabase.table('products').insert({
+                'code': code,
+                'name': name,
+                'price': price,
+                'stock': stock
+            }).execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            print(f"Error adding product: {e}")
+            return None
+    
+    def update_product(self, product_id, price=None, stock=None):
+        """Update product price and/or stock"""
+        try:
+            update_data = {}
+            if price is not None:
+                update_data['price'] = price
+            if stock is not None:
+                update_data['stock'] = stock
+            if update_data:
+                result = self.supabase.table('products')\
+                    .update(update_data)\
+                    .eq('id', product_id)\
+                    .execute()
+                return result.data[0] if result.data else None
+            return None
+        except Exception as e:
+            print(f"Error updating product: {e}")
+            return None
+    
+    def delete_product(self, product_id):
+        """Delete product"""
+        try:
+            result = self.supabase.table('products')\
+                .delete()\
+                .eq('id', product_id)\
+                .execute()
+            return result.data[0] if result.data else None
+        except Exception as e:
+            print(f"Error deleting product: {e}")
+            return None
+    
     def create_order(self, order_id, phone, items, amount, address):
         """Create new order"""
         try:
@@ -110,7 +156,7 @@ class Database:
             return []
     
     def update_stock(self, product_name, quantity):
-        """Update product stock"""
+        """Update product stock after order"""
         try:
             product = self.get_product_by_name(product_name)
             if product:
