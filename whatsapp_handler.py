@@ -336,7 +336,7 @@ class WhatsAppHandler:
         return True
     
     def process_message(self, phone, message):
-        """Intelligent message processing"""
+        """Intelligent message processing with location support"""
         message = message.strip()
         message_lower = message.lower()
         
@@ -368,6 +368,9 @@ class WhatsAppHandler:
         
         session = self.sessions[phone]
         state = session['state']
+        
+        # Check if this is a location message (contains coordinates)
+        is_location = self.is_location_message(message)
         
         # Intelligent greeting responses
         if message_lower in ['hi', 'hello', 'hey', 'hola', 'jambo', 'sasa', 'hi there', 'good morning', 'good afternoon', 'good evening']:
@@ -472,15 +475,34 @@ class WhatsAppHandler:
             self.send_whatsapp_message(phone, response)
             return
         
-        # AWAITING ADDRESS
+        # AWAITING ADDRESS - with location option
         if state == 'awaiting_address':
             if message_lower == 'cancel':
                 session['state'] = 'main_menu'
                 self.send_whatsapp_message(phone, "❌ Checkout cancelled. Send *MENU* to continue.")
                 return
-            response = self.save_address_and_payment(phone, message)
-            self.send_whatsapp_message(phone, response)
-            return
+            
+            # Check if message contains location (coordinates)
+            if is_location:
+                # Extract coordinates from location message
+                address = self.format_location_address(message)
+                response = self.save_address_and_payment(phone, address)
+                self.send_whatsapp_message(phone, response)
+                return
+            
+            # If user wants to share location (text response)
+            if message_lower == 'share location' or message_lower == 'share my location':
+                self.send_whatsapp_message(phone, "📍 *Share Your Location*\n\nPlease tap the attachment icon 📎 in WhatsApp, then select 'Location' and share your current location.\n\nOr type your address manually.")
+                return
+            
+            # Manual address entry
+            if len(message) > 5:
+                response = self.save_address_and_payment(phone, message)
+                self.send_whatsapp_message(phone, response)
+                return
+            else:
+                self.send_whatsapp_message(phone, "📍 *Delivery Address*\n\nPlease send your full delivery address, or tap the attachment icon 📎 and share your current location.\n\nExample: Westlands, Mpaka Road, Nairobi\n\nSend *CANCEL* to cancel")
+                return
         
         # AWAITING PAYMENT
         if state == 'awaiting_payment':
@@ -498,6 +520,37 @@ class WhatsAppHandler:
         # Default
         response = self.show_main_menu(phone)
         self.send_whatsapp_message(phone, response)
+    
+    def is_location_message(self, message):
+        """Check if message contains location coordinates"""
+        # Check for Google Maps links or coordinate patterns
+        location_patterns = [
+            r'https?://maps\.google\.com',
+            r'https?://www\.google\.com/maps',
+            r'@[-?\d.]+,[-?\d.]+',  # Coordinates like @-1.2837,36.8212
+            r'latitude.*longitude',
+            r'location'
+        ]
+        
+        for pattern in location_patterns:
+            if re.search(pattern, message.lower()):
+                return True
+        return False
+    
+    def format_location_address(self, message):
+        """Format location message into readable address"""
+        # Try to extract coordinates from Google Maps links
+        coord_match = re.search(r'@([-\d.]+),([-\d.]+)', message)
+        if coord_match:
+            lat = coord_match.group(1)
+            lng = coord_match.group(2)
+            return f"📍 Shared Location (Lat: {lat}, Lng: {lng}) - Customer's current location"
+        
+        # Try to extract from other formats
+        if 'maps.google.com' in message or 'google.com/maps' in message:
+            return "📍 Shared Location - Customer shared their location via Google Maps"
+        
+        return "📍 Shared Location - Customer's current location"
     
     def get_welcome_message(self):
         return f"👋 *Welcome to {self.get_shop_name()}!*\n\nWe're excited to serve you! 😊\n\nSend *MENU* to see our products and start shopping."
@@ -608,6 +661,7 @@ class WhatsAppHandler:
         return cart
     
     def start_checkout(self, phone):
+        """Start checkout with location option"""
         session = self.sessions[phone]
         
         if not session['cart']:
@@ -617,7 +671,7 @@ class WhatsAppHandler:
         session['state'] = 'awaiting_address'
         grand_total = session['total'] + 100
         
-        return f"📍 *Delivery Information*\n\nTotal: KES {grand_total}\n\nPlease send your delivery address:\nExample: Westlands, Mpaka Road, Nairobi\n\nSend *CANCEL* to cancel"
+        return f"📍 *Delivery Information*\n\nTotal: KES {grand_total}\n\n*How would you like to provide your address?*\n\n1️⃣ *Share Location* - Tap the attachment icon 📎 and select 'Location' to share your current location\n\n2️⃣ *Type Manually* - Send your full address\n\nExample: Westlands, Mpaka Road, Nairobi\n\nSend *CANCEL* to cancel"
     
     def save_address_and_payment(self, phone, address):
         session = self.sessions[phone]
